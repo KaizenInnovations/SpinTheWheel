@@ -362,6 +362,7 @@
         let spinTime = 0;
         let spinTimeTotal = 0;
         let currentPrize = null; 
+        let currentPrizeIndex = -1; // To store the index of the current prize for removal
         let winners = []; 
 
         // --- Audio (Tone.js) ---
@@ -439,8 +440,6 @@
             localStorage.setItem('selectedTheme', themeName);
             document.querySelector('.title-text').style.color = theme['--title-text-color'];
             document.querySelector('.pricing-text').style.color = theme['--pricing-text-color'];
-            // document.querySelector('.chaturbate-note').style.color = theme['--chaturbate-text-color']; // Line removed
-
 
             drawWheel();
             renderSegmentList(); 
@@ -572,6 +571,8 @@
         function stopRotateWheel() {
             cancelAnimationFrame(spinTimeout);
             isSpinning = false;
+            // Keep spin button disabled until explicitly re-enabled after modal or if not enough segments
+            // spinButton.disabled = false; 
 
             const pointerRefAngleRad = Math.PI / 2; 
             let effectiveAngleRad = pointerRefAngleRad - currentAngle; 
@@ -579,18 +580,10 @@
 
             if (segments.length > 0) {
                 const arcSizeRad = (2 * Math.PI) / segments.length;
-                let winningIndex = Math.floor(effectiveAngleRad / arcSizeRad);
+                currentPrizeIndex = Math.floor(effectiveAngleRad / arcSizeRad); // Store index
+                currentPrize = segments[currentPrizeIndex]; // Store the prize object
                 
-                currentPrize = segments[winningIndex]; 
-                const wonPrizeText = currentPrize.text; 
-
-                segments.splice(winningIndex, 1);
-                segments.forEach((seg, i) => seg.color = getSegmentColor(i));
-                
-                renderSegmentList(); 
-                drawWheel();         
-
-                showMessage(`Prize: ${wonPrizeText}!`);
+                showMessage(`Prize: ${currentPrize.text}!`);
                 launchConfetti(); 
 
                 if (winSynth) {
@@ -603,22 +596,19 @@
                     } catch(e) { console.warn("Audio error on win:", e)}
                 }
                 
-                prizeWonText.textContent = `The prize is: ${wonPrizeText}!`; 
+                prizeWonText.textContent = `The prize is: ${currentPrize.text}!`; 
                 prizeWonText.classList.remove('text-red-500'); 
                 winnerNameInput.value = '';
                 winnerModal.style.display = "flex";
                 winnerNameInput.focus();
-
-                if (segments.length < 2) {
+                // Prize is NOT removed here. It's removed in logWinner.
+                // Spin button state will be handled after modal interaction or if modal is closed.
+                if (segments.length < 2) { // Check current segments before modal
                     spinButton.disabled = true;
-                    if (segments.length === 0) {
-                        showMessage("All prizes won! Add more to spin again.", 5000);
-                    } else {
-                        showMessage("Only one prize left. Add more to spin!", 5000);
-                    }
                 } else {
-                    spinButton.disabled = false; 
+                    spinButton.disabled = false;
                 }
+
 
             } else {
                 showMessage("No prizes to win.");
@@ -734,12 +724,16 @@
         // --- Winner Logging ---
         function logWinner() {
             const winnerName = winnerNameInput.value.trim();
+            
             if (!currentPrize || !currentPrize.text) { 
                 showMessage("Error logging winner: Prize info missing.", 3000);
                 winnerModal.style.display = "none";
+                // Re-enable spin button if enough segments, as prize wasn't removed
+                if (segments.length >= 2) spinButton.disabled = false; else spinButton.disabled = true;
                 return;
             }
-            if (!winnerName) {
+
+            if (!winnerName) { // User did not enter a name
                 prizeWonText.textContent = `Please enter winner's name for: ${currentPrize.text}!`;
                 prizeWonText.classList.add('text-red-500', 'font-semibold'); 
                 winnerNameInput.focus();
@@ -747,13 +741,50 @@
                     if(currentPrize) prizeWonText.textContent = `The prize is: ${currentPrize.text}!`;
                     prizeWonText.classList.remove('text-red-500', 'font-semibold');
                 }, 3000);
-                return;
+                // Prize is NOT removed, re-enable spin button if applicable
+                if (segments.length >= 2) spinButton.disabled = false; else spinButton.disabled = true;
+                return; // Don't close modal, don't remove prize
             }
             
+            // Name entered, proceed to log and remove prize
             winners.unshift({ name: winnerName, prize: currentPrize.text }); 
             renderWinnersList();
+            
+            // Remove the won segment from the array using the stored index
+            if (currentPrizeIndex !== -1 && segments[currentPrizeIndex] && segments[currentPrizeIndex].text === currentPrize.text) {
+                segments.splice(currentPrizeIndex, 1);
+                // Re-assign colors if segment count changed, for visual consistency
+                segments.forEach((seg, i) => seg.color = getSegmentColor(i));
+            } else {
+                // Fallback: if index is bad, try to find by text (less reliable if duplicate prize names)
+                const idxToRemove = segments.findIndex(seg => seg.text === currentPrize.text);
+                if (idxToRemove !== -1) {
+                    segments.splice(idxToRemove, 1);
+                    segments.forEach((seg, i) => seg.color = getSegmentColor(i));
+                }
+            }
+            
+            renderSegmentList(); // Update the list of prizes UI
+            drawWheel();         // Redraw the wheel without the won prize
+            
             winnerModal.style.display = "none";
             showMessage(`${winnerName} won ${currentPrize.text}!`);
+
+            // Reset currentPrize and its index
+            currentPrize = null;
+            currentPrizeIndex = -1;
+
+            // Check segment count AFTER removal and modal display
+            if (segments.length < 2) {
+                spinButton.disabled = true;
+                if (segments.length === 0) {
+                    showMessage("All prizes won! Add more to spin again.", 5000);
+                } else {
+                    showMessage("Only one prize left. Add more to spin!", 5000);
+                }
+            } else {
+                spinButton.disabled = false; 
+            }
         }
 
         function renderWinnersList() {
@@ -862,7 +893,17 @@
         });
         clearSegmentsButton.addEventListener('click', clearAllSegments);
 
-        closeWinnerModalButton.addEventListener('click', () => winnerModal.style.display = "none");
+        closeWinnerModalButton.addEventListener('click', () => {
+            winnerModal.style.display = "none";
+            // If modal is closed without logging winner, ensure spin button is correctly enabled/disabled
+            if (segments.length >= 2) {
+                spinButton.disabled = false;
+            } else {
+                spinButton.disabled = true;
+            }
+            currentPrize = null; // Clear current prize if not logged
+            currentPrizeIndex = -1;
+        });
         confirmWinnerButton.addEventListener('click', logWinner);
         winnerNameInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') logWinner();
@@ -872,6 +913,9 @@
         window.addEventListener('click', function(event) {
             if (event.target == winnerModal) {
                 winnerModal.style.display = "none";
+                if (segments.length >= 2) spinButton.disabled = false; else spinButton.disabled = true;
+                currentPrize = null; 
+                currentPrizeIndex = -1;
             } else if (event.target == confirmationModal) {
                 confirmationModal.style.display = "none";
                 currentConfirmAction = null; 
